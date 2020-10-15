@@ -33,9 +33,7 @@ data class OutputContext(
 
 data class Stream(
     val pulls: Observable<Int>,
-    val sendableAmounts: Observable<Int>,
     val isSendable: Observable<Boolean>,
-    val bufSender: Subject<ByteArray>
 )
 
 data class OnStream(
@@ -54,7 +52,7 @@ data class Connection(
     val msgs: Observable<Msg>,
     val msgPuller: Subject<Int>,
     val register: (String) -> Observable<OnStream>,
-    val stream: (Header) -> Stream
+    val stream: (Header, Observable<ByteArray>) -> Stream
 )
 
 internal data class WindowState(val windowSize: Int, val increment: Int, val decrement: Int)

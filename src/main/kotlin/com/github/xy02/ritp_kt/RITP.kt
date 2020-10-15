@@ -162,33 +162,15 @@ private fun streamWith(
     newStreamId: () -> Int, msgSender: Subject<Msg>,
     getCloseMsgsByStreamId: (Int) -> Observable<Msg>,
     getPullMsgsByStreamId: (Int) -> Observable<Msg>
-): (Header) -> Stream = { header ->
+): (Header, Observable<ByteArray>) -> Stream = { header, bufs ->
     val streamId = newStreamId()
-    val remoteClose = getCloseMsgsByStreamId(streamId)
-        .take(1)
-        .flatMap { msg ->
-            Observable.error<Any>(Exception(msg.close.message))
-        }
-    val pulls = getPullMsgsByStreamId(streamId)
-        .map { msg -> msg.pull }
-        .takeUntil(remoteClose).share()
-    val bufSender = PublishSubject.create<ByteArray>()
-    val sendNotifier = BehaviorSubject.createDefault(0)
-    val bufs = bufSender.takeUntil(remoteClose)
-    val sendableAmounts = Observable.merge(sendNotifier, pulls)
-        .scan(0, Integer::sum)
-        .replay(1).refCount()
-    val isSendable = sendableAmounts.map { amount -> amount > 0 }
-        .distinctUntilChanged()
-        .replay(1).refCount()
-    val sendingMsgs = bufs.withLatestFrom(isSendable,
-        { buf, sendable ->
-            if (sendable) Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf)))
+    val sendable = BehaviorSubject.createDefault(false)
+    val msgs = bufs.withLatestFrom(sendable,
+        { buf, ok ->
+            if (ok) Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf)))
             else Observable.empty()
         })
         .flatMap { o -> o }
-        .doOnNext { sendNotifier.onNext(-1) }
-        .startWithItem(Msg.newBuilder().setHeader(header))
         .concatWith(
             Observable.just(
                 Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.COMPLETE))
@@ -199,8 +181,31 @@ private fun streamWith(
             Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(message))
         }
         .map { builder -> builder.setStreamId(streamId).build() }
-    sendingMsgs.subscribe(msgSender)
-    Stream(pulls, sendableAmounts, isSendable, bufSender)
+        .doOnEach(msgSender)
+        .share()
+    val theEndOfMsgs = msgs.lastOrError().toObservable()
+    val remoteClose = getCloseMsgsByStreamId(streamId)
+        .take(1)
+        .flatMap { msg ->
+            Observable.error<Any>(Exception(msg.close.message))
+        }
+    val pulls = getPullMsgsByStreamId(streamId)
+        .map { msg -> msg.pull }
+        .takeUntil(theEndOfMsgs)
+        .takeUntil(remoteClose)
+        .share()
+    val sendableAmounts = Observable.merge(msgs.map { -1 }, pulls)
+        .scan(0, Integer::sum)
+//        .replay(1).refCount()
+    val isSendable = sendableAmounts.map { amount -> amount > 0 }
+        .distinctUntilChanged()
+        .doOnEach(sendable)
+        .doOnSubscribe {
+            val msg = Msg.newBuilder().setHeader(header).setStreamId(streamId).build()
+            msgSender.onNext(msg)
+        }
+        .share()
+    Stream(pulls, isSendable)
 }
 
 fun initWith(myInfo: Info): (Observable<Socket>) -> Observable<Connection> = { sockets ->
