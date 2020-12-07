@@ -1,17 +1,24 @@
 package com.github.xy02.ritp_kt
 
 import com.google.protobuf.ByteString
+import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Observable
+import io.reactivex.rxjava3.core.Observer
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.subjects.BehaviorSubject
 import io.reactivex.rxjava3.subjects.PublishSubject
-import io.reactivex.rxjava3.subjects.Subject
 import ritp.*
+import java.nio.ByteBuffer
+import java.nio.channels.SelectionKey
+import java.nio.channels.Selector
+import java.nio.channels.SocketChannel
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-private fun getGroupedInput(buffers: Observable<ByteArray>): GroupedInput {
+
+internal fun getGroupedInput(buffers: Observable<ByteArray>): GroupedInput {
     val frames = buffers.map(Frame::parseFrom).share()
     val getFramesByType = getSubValues(frames) { frame -> frame.typeCase }
     val remoteClose = getFramesByType(Frame.TypeCase.CLOSE)
@@ -29,7 +36,7 @@ private fun getGroupedInput(buffers: Observable<ByteArray>): GroupedInput {
     return GroupedInput(info, msgs, pullsToGetMsg, remoteClose)
 }
 
-private fun getPullIncrements(
+internal fun getPullIncrements(
     msgs: Observable<Any>,
     pulls: Observable<Int>,
     overflowErr: Exception
@@ -50,34 +57,43 @@ private fun getPullIncrements(
             }
             WindowState(windowSize, increment, decrement)
         }
-    ).subscribe({ }, emitter::onError, emitter::onComplete)
+    ).subscribe({ }, emitter::tryOnError, emitter::onComplete)
     emitter.setDisposable(Disposable.fromAction { sub.dispose() })
 }
 
-private fun getOutputContext(msgs: Observable<Msg>, pullsToGetMsg: Observable<Int>): OutputContext {
+internal fun getOutputContext(msgs: Observable<Msg>, pullsToGetMsg: Observable<Int>): OutputContext {
+    val sendNotifier = BehaviorSubject.createDefault(0)
     val outputQueue: Queue<Msg> = ConcurrentLinkedQueue()
     val msgsFromQueue = pullsToGetMsg
+        .doOnComplete(sendNotifier::onComplete)
+        .doOnError(sendNotifier::onError)
         .flatMap { pull ->
-            Observable.fromIterable(
-                outputQueue
-            ).take(pull.toLong())
+            //fix bug
+            Observable
+                .generate<Msg> { emitter ->
+                    val v = outputQueue.poll()
+                    if (v != null) emitter.onNext(v)
+                    else emitter.onComplete()
+                }
+                .take(pull.toLong())
         }
-        .share()
     val msgSender = PublishSubject.create<Msg>()
-    val sendNotifier = BehaviorSubject.createDefault(0)
-    val sendableMsgsAmounts = Observable.merge(sendNotifier, pullsToGetMsg, msgsFromQueue.map { -1 })
-        .scan(0, Integer::sum).replay(1).refCount()
-    val msgFramesToSend = Observable.merge(
-        msgsFromQueue,
-        msgSender.withLatestFrom(sendableMsgsAmounts,
-            { msg, amount ->
-                if (amount > 0) Observable.just(msg) else Observable.empty<Msg>()
-                    .doOnComplete { outputQueue.add(msg) }
-            }
-        ).flatMap { x -> x }.doOnNext { sendNotifier.onNext(-1) }
-    ).map { msg ->
-        Frame.newBuilder().setMsg(msg).build()
-    }
+    val sendableMsgsAmounts = Observable.merge(sendNotifier, pullsToGetMsg)
+        .scan(0, { a, b -> a + b }).replay(1).refCount()
+    val msgFramesToSend = Observable
+        .merge(
+            msgsFromQueue,
+            msgSender.withLatestFrom(sendableMsgsAmounts,
+                { msg, amount ->
+                    if (amount > 0) Observable.just(msg) else Observable.empty<Msg>()
+                        .doOnComplete { outputQueue.add(msg) }
+                }
+            ).flatMap { x -> x }
+        )
+        .map { msg ->
+            Frame.newBuilder().setMsg(msg).build()
+        }
+        .doOnNext { sendNotifier.onNext(-1) }
     val msgPuller = PublishSubject.create<Int>()
     val pullIncrements = getPullIncrements(
         msgs.cast(
@@ -89,10 +105,10 @@ private fun getOutputContext(msgs: Observable<Msg>, pullsToGetMsg: Observable<In
     }
     val sid = AtomicInteger()
     val newStreamId = { sid.getAndIncrement() }
-    return OutputContext(msgSender, msgPuller, pullFramesToSend, msgFramesToSend, newStreamId)
+    return OutputContext(msgSender, msgPuller, pullFramesToSend, msgFramesToSend, newStreamId, sendableMsgsAmounts)
 }
 
-private fun getInputContext(msgs: Observable<Msg>): InputContext {
+internal fun getInputContext(msgs: Observable<Msg>): InputContext {
     val getMsgsByType = getSubValues(msgs, Msg::getTypeCase)
     val closeMsgs = getMsgsByType(Msg.TypeCase.CLOSE)
     val getCloseMsgsByStreamId = getSubValues(closeMsgs, Msg::getStreamId)
@@ -113,8 +129,8 @@ private fun getInputContext(msgs: Observable<Msg>): InputContext {
     )
 }
 
-private fun registerWith(
-    msgSender: Subject<Msg>,
+internal fun registerWith(
+    msgSender: Observer<Msg>,
     getHeaderMsgsByFn: (String) -> Observable<Msg>,
     getEndMsgsByStreamId: (Int) -> Observable<Msg>,
     getBufMsgsByStreamId: (Int) -> Observable<Msg>
@@ -158,8 +174,8 @@ private fun registerWith(
     }
 }
 
-private fun streamWith(
-    newStreamId: () -> Int, msgSender: Subject<Msg>,
+internal fun streamWith(
+    newStreamId: () -> Int, msgSender: Observer<Msg>,
     getCloseMsgsByStreamId: (Int) -> Observable<Msg>,
     getPullMsgsByStreamId: (Int) -> Observable<Msg>
 ): (Header, Observable<ByteArray>) -> Stream = { header, bufs ->
@@ -183,7 +199,7 @@ private fun streamWith(
         .map { builder -> builder.setStreamId(streamId).build() }
         .doOnEach(msgSender)
         .share()
-    val theEndOfMsgs = msgs.lastOrError().toObservable()
+    val theEndOfMsgs = msgs.ignoreElements().toObservable<Msg>()
     val remoteClose = getCloseMsgsByStreamId(streamId)
         .take(1)
         .flatMap { msg ->
@@ -193,9 +209,10 @@ private fun streamWith(
         .map { msg -> msg.pull }
         .takeUntil(theEndOfMsgs)
         .takeUntil(remoteClose)
-        .share()
+        .replay(1)
+        .refCount()
     val sendableAmounts = Observable.merge(msgs.map { -1 }, pulls)
-        .scan(0, Integer::sum)
+        .scan(0, { a, b -> a + b })
 //        .replay(1).refCount()
     val isSendable = sendableAmounts.map { amount -> amount > 0 }
         .distinctUntilChanged()
@@ -208,10 +225,10 @@ private fun streamWith(
     Stream(pulls, isSendable)
 }
 
-fun initWith(myInfo: Info): (Observable<Socket>) -> Observable<Connection> = { sockets ->
-    sockets.flatMapSingle { socket ->
+internal fun initWith(myInfo: Info): (Observable<Socket>) -> Observable<Connection> = { sockets ->
+    sockets.flatMapMaybe { socket ->
         val (info, msgs, pullsToGetMsg, remoteClose) = getGroupedInput(socket.buffers)
-        val (msgSender, msgPuller, pullFramesToSend, msgFramesToSend, newStreamId)
+        val (msgSender, msgPuller, pullFramesToSend, msgFramesToSend, newStreamId, sendableMsgsAmounts)
                 = getOutputContext(msgs, pullsToGetMsg)
         val (getHeaderMsgsByFn, getCloseMsgsByStreamId, getPullMsgsByStreamId, getEndMsgsByStreamId, getBufMsgsByStreamId)
                 = getInputContext(msgs)
@@ -237,7 +254,101 @@ fun initWith(myInfo: Info): (Observable<Socket>) -> Observable<Connection> = { s
             .map { remoteInfo ->
                 val register = registerWith(msgSender, getHeaderMsgsByFn, getEndMsgsByStreamId, getBufMsgsByStreamId)
                 val stream = streamWith(newStreamId, msgSender, getCloseMsgsByStreamId, getPullMsgsByStreamId)
-                Connection(remoteInfo, msgs, msgPuller, register, stream)
+                Connection(remoteInfo, msgs, msgPuller, register, stream, sendableMsgsAmounts)
             }
+            .onErrorComplete()
     }
+}
+
+//按应用名获取最空闲度的连接
+internal fun getIdlestConnection(connections: Observable<Connection>): (app: String) -> Maybe<Connection> {
+    val map = ConcurrentHashMap<String, Connection>()
+    connections.groupBy { conn -> conn.remoteInfo.appName }
+        .flatMap { group ->
+            group
+                .flatMap { conn ->
+                    conn.sendableMsgsAmounts.map { amount -> Pair(amount, conn) }
+                        .onErrorComplete()
+                        .doOnComplete { if (map[group.key] == conn) map.remove(group.key) }
+                }
+                .distinctUntilChanged { (amount, conn), (oldAmount, oldConn) -> conn != oldConn && amount > oldAmount }
+                .doOnNext { (_, conn) -> map[group.key] = conn }
+        }
+        .subscribe()//side effect
+    return { appName ->
+        Maybe.create {
+            val conn = map[appName]
+            if (conn == null) it.onComplete() else it.onSuccess(conn)
+        }
+    }
+}
+
+internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Socket {
+    val sender = PublishSubject.create<ByteArray>()
+    val buffers = Observable.create<ByteArray> { emitter1 ->
+        val d = sender
+//            .observeOn(Schedulers.io())
+            .subscribe(
+                { buf ->
+//                            System.out.println("to send buf:"+ buf);
+                    try {
+                        val size = buf.size
+                        val lengthBuf = ByteBuffer.allocate(3)
+                            .put((size shr 16 and 0xff).toByte())
+                            .put((size shr 8 and 0xff).toByte())
+                            .put((size and 0xff).toByte())
+                        lengthBuf.flip()
+                        while (lengthBuf.hasRemaining()) sc.write(lengthBuf)
+                        val bodyBuf = ByteBuffer.wrap(buf)
+                        while (bodyBuf.hasRemaining()) sc.write(bodyBuf)
+//                    println("write $bodyBuf on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
+                    } catch (e: Exception) {
+                        println("write SocketChannel: $e")
+                        sc.close()
+                    }
+                },
+                { err ->
+                    println("sender onError:$err")
+                    sc.close()
+                },
+                {
+                    println("sender onComplete")
+                    sc.close()
+                }
+            )
+        sc.register(selector, SelectionKey.OP_READ, SocketChannelAttachment(emitter1))
+        emitter1.setDisposable(Disposable.fromAction { d.dispose() })
+    }
+//        .observeOn(Schedulers.computation())
+        .share()
+    return Socket(buffers, sender)
+}
+
+internal fun readSocketChannel(sc: SocketChannel, att: SocketChannelAttachment): Boolean {
+    val buf = att.bufOfBody ?: att.bufOfLength
+    try {
+        val bytesRead = sc.read(buf)
+        if (bytesRead == -1) {
+            sc.close()
+            if (!att.emitter.isDisposed) att.emitter.tryOnError(java.nio.channels.ClosedChannelException())
+            return false
+        }
+    } catch (e: Exception) {
+        println("read SocketChannel: $e")
+        if (!att.emitter.isDisposed) att.emitter.tryOnError(e)
+    }
+    if (buf.hasRemaining()) return false
+    if (att.bufOfBody == null) {
+        //从bufOfLength获取body长度
+        buf.flip()
+        att.bufOfBody = ByteBuffer.allocate(buf.int)
+        buf.clear()
+        buf.put(0)//body长度实际只有3字节，这里把最高位字节设置为0
+    } else {
+//        println("read $buf on ${Thread.currentThread().name} : ${Thread.currentThread().id}")
+        att.emitter.onNext(buf.array())
+        att.bufOfBody = null
+    }
+//    readSocketChannel(sc, att)
+    return true
 }

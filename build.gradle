@@ -1,18 +1,23 @@
 plugins {
-    id 'org.jetbrains.kotlin.jvm' version '1.4.10'
+    id 'org.jetbrains.kotlin.jvm' version '1.4.20'
     id "com.google.protobuf" version "0.8.13"
+//    id 'application'
 }
 group = 'com.github.xy02'
-version = '0.1.1'
+version = '0.2.0'
+//application {
+//    mainClassName ="com.github.xy02.ritp_kt.ClientKt"
+//}
 
 repositories {
     mavenCentral()
 }
 dependencies {
     testImplementation 'org.jetbrains.kotlin:kotlin-test-junit'
-    implementation "io.reactivex.rxjava3:rxjava:3.0.6"
+    implementation "io.reactivex.rxjava3:rxjava:3.0.8"
     implementation 'com.google.protobuf:protobuf-javalite:3.13.0'
-//    implementation 'io.vertx:vertx-core:3.9.3'
+    implementation 'io.vertx:vertx-core:3.9.3'
+    implementation 'net.i2p.crypto:eddsa:0.3.0'
 }
 compileKotlin {
     kotlinOptions.jvmTarget = '1.8'

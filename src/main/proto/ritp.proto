@@ -1,4 +1,4 @@
-//v0.4.1
+//v0.5.0
 syntax = "proto3";
 
 option java_multiple_files = true;
@@ -23,9 +23,32 @@ message Frame {
 
 //本端信息
 message Info {
+    //协议版本号
     string version = 1;
+    //任意数据
     bytes data = 2;
+    //数据类型
     string data_type = 3;
+    //应用名，用于表明身份，配合pull可实现负载均衡
+    string app_name = 4;
+    //签名算法
+    SignAlg sign_alg = 5;
+    //签名时间戳（毫秒）
+    int64 sign_at = 6;
+    //签名，签名消息按顺序写入(以下伪代码）
+    // update(version.toByteArray(Charsets.UTF_8)); //version的utf8字节
+    // update(data); //data字节
+    // update(data_type.toByteArray(Charsets.UTF_8)); //data_type的utf8字节
+    // update(app_name.toByteArray(Charsets.UTF_8));  //app_name的utf8字节
+    // update(Buffer.alloc(4).writeIntBigEndian(sign_alg.value));  //sign_alg整形值的大端字节
+    // update(Buffer.alloc(8).writeLongBigEndian(sign_at)); //sign_at长整形值的大端字节
+    bytes sign = 11;
+
+}
+
+//签名算法
+enum SignAlg {
+    Ed25519 = 0;
 }
 
 //关闭流
