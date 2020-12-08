@@ -12,6 +12,7 @@ import net.i2p.crypto.eddsa.spec.EdDSAPrivateKeySpec
 import net.i2p.crypto.eddsa.spec.EdDSAPublicKeySpec
 import ritp.Info
 import ritp.InfoOrBuilder
+import ritp.SignAlg
 import java.net.SocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.SelectionKey
@@ -27,11 +28,19 @@ fun init(myInfo: Info, sockets: Observable<Socket>, options: InitOptions = InitO
     val connections = initWith(myInfo)(sockets)
         .filter { conn ->
             if (conn.remoteInfo.appName.isNullOrEmpty() && !options.denyAnonymousApp) true
-            else verifyInfo(conn.remoteInfo, options.appPublicKeyMap)
+            else {
+                val ok = verifyInfo(conn.remoteInfo, options.appPublicKeyMap)
+                if (!ok) conn.msgPuller.onError(Exception("info verification failed"))
+                ok
+            }
         }
         .publish().refCount(2)
     val getIdlestConnectionByAppName = getIdlestConnection(connections)
     return connections.map { conn -> Context(conn, getIdlestConnectionByAppName) }
+}
+
+fun init(myInfo: Single<Info>, sockets: Observable<Socket>, options: InitOptions = InitOptions()): Observable<Context> {
+    return myInfo.flatMapObservable { info -> init(info, sockets, options) }
 }
 
 fun nioSocketsSource(): SocketsSource {
@@ -154,15 +163,19 @@ fun verifyInfo(info: Info, appPublicKeyMap: Map<String, ByteArray>): Boolean {
     return sgr.verify(info.sign.toByteArray())
 }
 
-fun signInfoByEd25519(info: Info.Builder, seed: ByteArray) {
+fun signInfoByEd25519(info: Info.Builder, seed: ByteArray): Single<Info> {
+    if (info.appName.isNullOrEmpty()) return Single.error(Exception("require appName"))
     val spec = EdDSANamedCurveTable.getByName(EdDSANamedCurveTable.ED_25519)
     val keySpec = EdDSAPrivateKeySpec(seed, spec)
     val key = EdDSAPrivateKey(keySpec)
     val sgr = EdDSAEngine(MessageDigest.getInstance(spec.hashAlgorithm))
     sgr.initSign(key)
+    info.signAlg = SignAlg.Ed25519
+    info.signAt = System.currentTimeMillis()
     updateSignature(sgr, info)
     val sig = sgr.sign()
     info.sign = ByteString.copyFrom(sig)
+    return Single.just(info.build())
 }
 
 fun updateSignature(sgr: Signature, info: InfoOrBuilder) {

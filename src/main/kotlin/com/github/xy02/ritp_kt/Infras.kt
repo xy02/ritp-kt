@@ -16,8 +16,10 @@ import io.vertx.core.json.JsonObject
 import ritp.Header
 import ritp.Info
 import java.text.SimpleDateFormat
+import java.util.*
 
 fun main(args: Array<String>) {
+    val pubKey = Base64.getDecoder().decode("zxj0S8mMIE0QDeJqOMPSll0LJBZr0bnn7fdw+/fpuRY=")
     RxJavaPlugins.setErrorHandler { e -> println("RxJavaPlugins e:$e") }
 
 //        var options = new HttpServerOptions()
@@ -33,7 +35,11 @@ fun main(args: Array<String>) {
 
     val myInfo = Info.newBuilder().setVersion("0.1").build()
 //    val init = initWith(myInfo)
-    val ctxs = init(myInfo, sockets).doOnNext { println("new context") }
+    val ctxs = init(myInfo, sockets,
+        InitOptions(
+            denyAnonymousApp = true,
+            appPublicKeyMap = mapOf("someApp" to pubKey)
+        )).doOnNext { println("new context") }
     ctxs.flatMap { ctx -> handleConnection(ctx.connection) }.subscribe()
     val vertx = Vertx.vertx(VertxOptions().setPreferNativeTransport(true))
 //    val vertx = Vertx.vertx()

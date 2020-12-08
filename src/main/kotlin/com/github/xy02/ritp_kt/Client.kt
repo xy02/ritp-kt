@@ -6,14 +6,18 @@ import io.reactivex.rxjava3.subjects.PublishSubject
 import ritp.Header
 import ritp.Info
 import java.net.InetSocketAddress
+import java.util.*
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
+    val priKeySeed = Base64.getDecoder().decode("aWOsghdX5IMTXq22Z8Lbl0MoMwCJrBSE0OzstHaWbJ0=")
+    val myInfo = signInfoByEd25519(Info.newBuilder().setAppName("someApp"), priKeySeed)
+
     val source = nioSocketsSource()
-    val socket = nioClientSocket(source, InetSocketAddress("localhost", 8001))
-    val socket2 = nioClientSocket(source, InetSocketAddress("localhost", 8001))
-    val myInfo = Info.newBuilder().setVersion("0.2").build()
-    val cxs = init(myInfo, Observable.merge(socket.toObservable(), socket2.toObservable())
+    val socket = nioClientSocket(source, InetSocketAddress("localhost", 8001)).toObservable()
+//    val socket2 = nioClientSocket(source, InetSocketAddress("localhost", 8001))
+//    val myInfo = Info.newBuilder().setVersion("0.2").build()
+    val cxs = init(myInfo, socket
         .retryWhen {
             it.flatMap { e ->
                 println(e)
