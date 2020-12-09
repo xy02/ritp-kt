@@ -10,7 +10,7 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
-    val priKeySeed = Base64.getDecoder().decode("aWOsghdX5IMTXq22Z8Lbl0MoMwCJrBSE0OzstHaWbJ0=")
+    val priKeySeed = Base64.getDecoder().decode("lWOsghdX5IMTXq22Z8Lbl0MoMwCJrBSE0OzstHaWbJ0=")
     val myInfo = signInfoByEd25519(Info.newBuilder().setAppName("someApp"), priKeySeed)
 
     val source = nioSocketsSource()

@@ -179,10 +179,10 @@ fun signInfoByEd25519(info: Info.Builder, seed: ByteArray): Single<Info> {
 }
 
 fun updateSignature(sgr: Signature, info: InfoOrBuilder) {
-    sgr.update(info.version.toByteArray(Charsets.UTF_8))
-    sgr.update(info.data.toByteArray())
-    sgr.update(info.dataType.toByteArray())
-    sgr.update(info.appName.toByteArray())
-    sgr.update(ByteBuffer.allocate(4).putInt(info.signAlgValue))
-    sgr.update(ByteBuffer.allocate(8).putLong(info.signAt))
+    if (info.version.isNotEmpty()) sgr.update(info.version.toByteArray(Charsets.UTF_8))
+    if (!info.data.isEmpty) sgr.update(info.data.toByteArray())
+    if (info.dataType.isNotEmpty()) sgr.update(info.dataType.toByteArray())
+    if (info.appName.isNotEmpty()) sgr.update(info.appName.toByteArray())
+    if (info.signAlgValue != 0) sgr.update(ByteBuffer.allocate(4).putInt(info.signAlgValue))
+    if (info.signAt != 0L) sgr.update(ByteBuffer.allocate(8).putLong(info.signAt))
 }

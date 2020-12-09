@@ -35,7 +35,7 @@ message Info {
     SignAlg sign_alg = 5;
     //签名时间戳（毫秒）
     int64 sign_at = 6;
-    //签名，签名消息按顺序写入(以下伪代码）
+    //签名，签名消息按顺序写入，并只写入非零值字段(以下伪代码）
     // update(version.toByteArray(Charsets.UTF_8)); //version的utf8字节
     // update(data); //data字节
     // update(data_type.toByteArray(Charsets.UTF_8)); //data_type的utf8字节
