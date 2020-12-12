@@ -169,7 +169,8 @@ internal fun registerWith(
                     .setClose(Close.newBuilder().setReason(Close.Reason.APPLICATION_ERROR).setMessage(message))
             }
             .map { builder -> builder.setStreamId(streamId).build() }
-        pullMsgsToSend.subscribe(msgSender) //side effect
+            .doOnNext { msgSender.onNext(it) }
+        pullMsgsToSend.subscribe() //side effect
         OnStream(header, bufs, bufPuller)
     }
 }
@@ -178,10 +179,32 @@ internal fun streamWith(
     newStreamId: () -> Int, msgSender: Observer<Msg>,
     getCloseMsgsByStreamId: (Int) -> Observable<Msg>,
     getPullMsgsByStreamId: (Int) -> Observable<Msg>
-): (Header, Observable<ByteArray>) -> Stream = { header, bufs ->
+): (Header) -> Stream = { header ->
     val streamId = newStreamId()
-    val sendable = BehaviorSubject.createDefault(false)
-    val msgs = bufs.withLatestFrom(sendable,
+    val sendingMsg = PublishSubject.create<Msg>()
+    val theEndOfMsgs = sendingMsg.ignoreElements().toObservable<Msg>()
+    val remoteClose = getCloseMsgsByStreamId(streamId)
+        .take(1)
+        .flatMap { msg ->
+            Observable.error<Any>(Exception(msg.close.message))
+        }
+    val pulls = getPullMsgsByStreamId(streamId)
+        .map { msg -> msg.pull }
+        .takeUntil(theEndOfMsgs)
+        .takeUntil(remoteClose)
+        .replay(1)
+        .refCount()
+    val sendableAmounts = Observable.merge(sendingMsg.map { -1 }, pulls)
+        .scan(0, { a, b -> a + b })
+    val isSendable = sendableAmounts.map { amount -> amount > 0 }
+        .distinctUntilChanged()
+        .doOnSubscribe {
+            val msg = Msg.newBuilder().setHeader(header).setStreamId(streamId).build()
+            msgSender.onNext(msg)
+        }
+    val bufSender = PublishSubject.create<ByteArray>()
+    //side effect
+    bufSender.withLatestFrom(isSendable,
         { buf, ok ->
             if (ok) Observable.just(Msg.newBuilder().setBuf(ByteString.copyFrom(buf)))
             else Observable.empty()
@@ -197,32 +220,9 @@ internal fun streamWith(
             Msg.newBuilder().setEnd(End.newBuilder().setReason(End.Reason.CANCEL).setMessage(message))
         }
         .map { builder -> builder.setStreamId(streamId).build() }
-        .doOnEach(msgSender)
-        .share()
-    val theEndOfMsgs = msgs.ignoreElements().toObservable<Msg>()
-    val remoteClose = getCloseMsgsByStreamId(streamId)
-        .take(1)
-        .flatMap { msg ->
-            Observable.error<Any>(Exception(msg.close.message))
-        }
-    val pulls = getPullMsgsByStreamId(streamId)
-        .map { msg -> msg.pull }
-        .takeUntil(theEndOfMsgs)
-        .takeUntil(remoteClose)
-        .replay(1)
-        .refCount()
-    val sendableAmounts = Observable.merge(msgs.map { -1 }, pulls)
-        .scan(0, { a, b -> a + b })
-//        .replay(1).refCount()
-    val isSendable = sendableAmounts.map { amount -> amount > 0 }
-        .distinctUntilChanged()
-        .doOnEach(sendable)
-        .doOnSubscribe {
-            val msg = Msg.newBuilder().setHeader(header).setStreamId(streamId).build()
-            msgSender.onNext(msg)
-        }
-        .share()
-    Stream(pulls, isSendable)
+        .doOnNext { msgSender.onNext(it) }
+        .subscribe(sendingMsg)
+    Stream(pulls, isSendable, bufSender)
 }
 
 internal fun initWith(myInfo: Info): (Observable<Socket>) -> Observable<Connection> = { sockets ->
@@ -260,27 +260,34 @@ internal fun initWith(myInfo: Info): (Observable<Socket>) -> Observable<Connecti
     }
 }
 
-//按应用名获取最空闲度的连接
-internal fun getIdlestConnection(connections: Observable<Connection>): (app: String) -> Maybe<Connection> {
+internal fun createContexts(conns: Observable<Connection>): Observable<Context> {
     val map = ConcurrentHashMap<String, Connection>()
-    connections.groupBy { conn -> conn.remoteInfo.appName }
-        .flatMap { group ->
-            group
-                .flatMap { conn ->
-                    conn.sendableMsgsAmounts.map { amount -> Pair(amount, conn) }
-                        .onErrorComplete()
-                        .doOnComplete { if (map[group.key] == conn) map.remove(group.key) }
+    val connections = Observable.just(conns)
+        .doOnNext {
+            it.groupBy { conn -> conn.remoteInfo.appName }
+                .flatMap { group ->
+                    group
+                        .flatMap { conn ->
+                            conn.sendableMsgsAmounts.map { amount -> Pair(amount, conn) }
+                                .onErrorComplete()
+                                .doOnComplete { if (map[group.key] == conn) map.remove(group.key) }
+                        }
+                        .distinctUntilChanged { (amount, conn), (oldAmount, oldConn) -> conn != oldConn && amount > oldAmount }
+                        .doOnNext { (_, conn) -> map[group.key] = conn }
                 }
-                .distinctUntilChanged { (amount, conn), (oldAmount, oldConn) -> conn != oldConn && amount > oldAmount }
-                .doOnNext { (_, conn) -> map[group.key] = conn }
+                .subscribe()//side effect
         }
-        .subscribe()//side effect
-    return { appName ->
-        Maybe.create {
+        .flatMap { it }
+    //按应用名获取最空闲度的连接
+    val getIdlestConnectionByAppName = { appName: String ->
+        Maybe.create<Connection> {
             val conn = map[appName]
             if (conn == null) it.onComplete() else it.onSuccess(conn)
         }
     }
+    return connections.map { connection ->
+        Context(connection, getIdlestConnectionByAppName)
+    }.share()
 }
 
 internal fun newSocketFromSocketChannel(sc: SocketChannel, selector: Selector): Socket {

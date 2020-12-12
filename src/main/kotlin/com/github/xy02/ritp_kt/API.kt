@@ -24,6 +24,21 @@ import java.security.Signature
 import java.util.concurrent.atomic.AtomicInteger
 
 
+//fun init(myInfo: Info, sockets: Observable<Socket>, options: InitOptions = InitOptions()): Observable<Context> {
+//    val connections = initWith(myInfo)(sockets)
+//        .filter { conn ->
+//            if (conn.remoteInfo.appName.isNullOrEmpty() && !options.denyAnonymousApp) true
+//            else {
+//                val ok = verifyInfo(conn.remoteInfo, options.appPublicKeyMap)
+//                if (!ok) conn.msgPuller.onError(Exception("info verification failed"))
+//                ok
+//            }
+//        }
+//        .publish().refCount(2)
+//    val getIdlestConnectionByAppName = getIdlestConnection(connections)
+//    return connections.map { conn -> Context(conn, getIdlestConnectionByAppName) }
+//}
+
 fun init(myInfo: Info, sockets: Observable<Socket>, options: InitOptions = InitOptions()): Observable<Context> {
     val connections = initWith(myInfo)(sockets)
         .filter { conn ->
@@ -34,9 +49,8 @@ fun init(myInfo: Info, sockets: Observable<Socket>, options: InitOptions = InitO
                 ok
             }
         }
-        .publish().refCount(2)
-    val getIdlestConnectionByAppName = getIdlestConnection(connections)
-    return connections.map { conn -> Context(conn, getIdlestConnectionByAppName) }
+        .share()
+    return createContexts(connections)
 }
 
 fun init(myInfo: Single<Info>, sockets: Observable<Socket>, options: InitOptions = InitOptions()): Observable<Context> {

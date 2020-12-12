@@ -68,32 +68,28 @@ private fun accReplyFn(conn: Connection): Observable<OnStream> =
             .subscribe(bufPuller)
     }
 
-private fun accFn(conn: Connection): Observable<Boolean> {
+private fun accFn(conn: Connection): Observable<ByteArray> {
+    val stream =
+        conn.stream(Header.newBuilder().setFn("acc").setOutputTo("accReply").build())
     val bufs = Observable.interval(2, TimeUnit.SECONDS)
         .map { ByteArray(2) }
-    val stream =
-        conn.stream(Header.newBuilder().setFn("acc").setOutputTo("accReply").build(), bufs)
-    return stream.isSendable
-        .doOnComplete { println("isSendable doOnComplete") }
-        .doOnError { println("isSendable doOnError, e:$it") }
+        .doOnEach(stream.bufSender)
+    return bufs
 }
 
-private fun crazyAcc(conn: Connection): Observable<Boolean> {
-    val bufSender = PublishSubject.create<ByteArray>()
-    val (pulls, isSendable) = conn.stream(
-        Header.newBuilder().setFn("acc").setOutputTo("crazyAccReply").build(), bufSender
+private fun crazyAcc(conn: Connection): Observable<ByteArray> {
+    val (pulls, isSendable, bufSender) = conn.stream(
+        Header.newBuilder().setFn("acc").setOutputTo("crazyAccReply").build()
     )
-    return isSendable.doOnSubscribe {
-        Observable.timer(1, TimeUnit.SECONDS)
-            .flatMap {
-                pulls.flatMap { pull ->
+    return Observable.timer(1, TimeUnit.SECONDS)
+        .flatMap {
+            pulls.flatMap { pull ->
 //                        println("the pull is $pull")
-                    Observable.just(ByteArray(1))
-                        .repeat(pull.toLong())
-                }
+                Observable.just(ByteArray(1))
+                    .repeat(pull.toLong())
             }
-            .subscribe(bufSender)
-    }
+        }
+        .doOnEach(bufSender)
 }
 
 private fun crazyAccReply(conn: Connection): Observable<OnStream> =

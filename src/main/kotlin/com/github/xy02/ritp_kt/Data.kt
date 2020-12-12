@@ -37,6 +37,7 @@ data class OutputContext(
 data class Stream(
     val pulls: Observable<Int>,
     val isSendable: Observable<Boolean>,
+    val bufSender: Observer<ByteArray>,
 )
 
 data class OnStream(
@@ -55,12 +56,13 @@ data class Connection(
     val msgs: Observable<Msg>,
     val msgPuller: Observer<Int>,
     val register: (String) -> Observable<OnStream>,
-    val stream: (Header, Observable<ByteArray>) -> Stream,
+    val stream: (Header) -> Stream,
     val sendableMsgsAmounts: Observable<Int>,
 )
 
 data class Context(
     val connection: Connection,
+    //按应用名获取最空闲度的连接
     val getIdlestConnectionByAppName: (appName: String) -> Maybe<Connection>,
 )
 

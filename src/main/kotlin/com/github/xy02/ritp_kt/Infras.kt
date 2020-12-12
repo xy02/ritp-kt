@@ -17,6 +17,7 @@ import ritp.Header
 import ritp.Info
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.TimeUnit
 
 fun main(args: Array<String>) {
     val pubKey = Base64.getDecoder().decode("zxj0S8mMIE0QDeJqOMPSll0LJBZr0bnn7fdw+/fpuRY=")
@@ -121,18 +122,17 @@ private fun accFn(conn: Connection): Observable<OnStream> =
                     .put("acc", acc)
                 json.toBuffer().bytes
             }
-        //创建下游流（无副作用，直到订阅其中的isSendable时才会发送header）
+        //创建下游流（会发送header）
         val downStream = conn.stream(
             Header.newBuilder()
                 .setFn(header.outputTo)
                 .setBufType("json")
-                .build(),
-            handledBufs
+                .build()
         )
+        //向下游输出处理过的数据
+        handledBufs.subscribe(downStream.bufSender)
         //让拉取上游数据的速度与下游流的拉取速度相同
         downStream.pulls.subscribe(bufPuller)
-        //副作用操作，会发送header
-        downStream.isSendable.subscribe({}, {})
     }
 
 private fun createWebSockets(options: HttpServerOptions): Observable<ServerWebSocket> =
